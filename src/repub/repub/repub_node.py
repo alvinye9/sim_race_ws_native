@@ -1,18 +1,17 @@
-#!/usr/bin/env python3
-
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int8, Header
+from std_msgs.msg import Float32, Float64, Int8, Header
 from blackandgold_msgs.msg import BasestationCommand
-from novatel_oem7_msgs.msg import BESTPOS
+from novatel_oem7_msgs.msg import BESTPOS, HEADING2, BESTVEL, INSPVA
 from autonoma_msgs.msg import VehicleInputs
 
 from pyproj import CRS, Transformer 
 
 from geometry_msgs.msg import TransformStamped
 from math import cos, sin
-import tf2_ros
+from tf2_ros import TransformBroadcaster
 import math
+import numpy as np
 
 #Node to republish messages from Simulink stack to SIM Race Simulator
 
@@ -32,12 +31,16 @@ class Simulink_to_SIM_Race(Node):
 
     true_easting = 521921.53 #Float32 UTM 32N, origin of Monza 
     true_northing = 5051752.75 #UTM 32N
-    true_heading = 0 #Float32 degrees
+    true_heading = 0.0 #Float32 degrees
+    true_local_x = 0.0
+    true_local_y = 0.0
+
+    true_vel = 0.0
 
     
     def __init__(self):
         super().__init__('repub_node')
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.subscription = self.create_subscription(
             Float32,
@@ -53,7 +56,7 @@ class Simulink_to_SIM_Race(Node):
         )
         self.subscription = self.create_subscription(
             Float32,
-            '/joystick/kin_control_steering_cmd',
+            '/joystick/steering_cmd',
             self.steering_cmd_callback,
             10
         )
@@ -64,33 +67,46 @@ class Simulink_to_SIM_Race(Node):
             10
         )
 
-        #create vehicle_input publisher
-        self.publisher = self.create_publisher(
+        # self.subscription = self.create_subscription(
+        #     BESTPOS, 
+        #     '/novatel_top/bestgnsspos', 
+        #     self.pos_callback, 
+        #     10)
+
+        # self.subscription = self.create_subscription(
+        #     HEADING2, 
+        #     '/novatel_bottom/heading2',  #novatel_top/heading2 appears to be broken
+        #     self.heading_callback, 
+        #     10)   
+
+        self.subscription = self.create_subscription(
+            BESTVEL, 
+            '/novatel_top/bestvel', 
+            self.vel_callback, 
+            10)
+
+        self.subscription = self.create_subscription(
+            INSPVA, 
+            '/novatel_top/inspva', 
+            self.pos_heading_callback, 
+            10)
+
+        #PUBLISHERS
+        self.cmd_input_publisher = self.create_publisher(
             VehicleInputs,
             '/vehicle_inputs',
             10
         )
-
-        self.subscription = self.create_subscription(
-            BESTPOS, 
-            '/novatel_top/bestgnsspos', 
-            self.pos_callback, 
+        self.vel_publisher = self.create_publisher(
+            Float32,
+            '/localization/vehicle_speed', 
             10)
-        self.subscription = self.create_subscription(
-            Float32, 
-            '/novatel_top/heading2', 
-            self.heading_callback, 
-            10)   
-
-        #self.subscription = self.create_subscription(BESTVEL, '/novatel_top/bestvel', self.top_vel_callback, 10)
-
-        # #create vehicle_pos publisher
-        # self.publisher = self.create_publisher(Float32,'/localization/vehicle_speed', 10)
 
 
         # create timer to publish every second
-        self.timer1 = self.create_timer(1.0, self.publish_vehicle_inputs)
-        self.timer2 = self.create_timer(1.0, self.publish_tf)
+        self.timer1 = self.create_timer(0.01, self.publish_vehicle_inputs)
+        self.timer2 = self.create_timer(0.01, self.publish_tf)
+        self.timer3 = self.create_timer(0.01, self.publish_vel)
 
         
 
@@ -112,12 +128,13 @@ class Simulink_to_SIM_Race(Node):
         #self.get_logger().info('Republished brake cmd')
 
     def steering_cmd_callback(self,msg):
-        self.curr_steer_cmd = msg.data
-        #print(self.curr_steer_cmd)
+        steer_cmd = msg.data
+        self.curr_steer_cmd = steer_cmd * 13.5
+
         #curr_gear_cmd= int(round(msg.data))  # Convert to int
         #self.publish_vehicle_inputs(throttle_cmd=msg.data, curr_brake_cmd=msg.data, steering_cmd=msg.data, gear_cmd=gear_cmd)
         #self.publish_vehicle_inputs()
-        #self.get_logger().info('Republished steering cmd:')
+        #self.get_logger().info('Republished steering cmd:'+str(self.curr_steer_cmd))
 
     def gear_cmd_callback(self,msg):
         self.curr_gear_cmd= msg.data
@@ -127,63 +144,96 @@ class Simulink_to_SIM_Race(Node):
         #self.publish_vehicle_inputs()
         #self.get_logger().info('Republished gear cmd')
 
-    def pos_callback(self,msg):
-        latitude = msg.lat
-        longitude = msg.lon
-        [self.true_easting, self.true_northing] = self.latlon_to_utm(latitude, longitude)
-        # self.get_logger().info('Lat:' + str(latitude))
-        # self.get_logger().info('Long:' + str(longitude))
-        # self.get_logger().info('Easting:' + str(self.true_easting))
-        # self.get_logger().info('Northing:' + str(self.true_northing))
+    # def pos_callback(self,msg):
+    #     latitude = msg.lat
+    #     longitude = msg.lon
+    #     [self.true_easting, self.true_northing] = self.latlon_to_utm(latitude, longitude)
+    #     self.true_local_x = self.true_easting - 521921.53
+    #     self.true_local_y = self.true_northing - 5051752.75
+    #     # self.get_logger().info('Lat:' + str(latitude))
+    #     # self.get_logger().info('Long:' + str(longitude))
+    #     # self.get_logger().info('Easting:' + str(self.true_easting))
+    #     # self.get_logger().info('Northing:' + str(self.true_northing))
 
-    def heading_callback(self,msg):
-        self.true_heading = msg.heading #AKA Yaw (psi)
-        self.get_logger().info('Heading:' + str(self.true_heading))
+    def vel_callback(self,msg):
+        self.true_vel = msg.hor_speed #m/s
+        #self.get_logger().info('Got velocity (m/s):' + str(self.true_vel))
+
+    # def heading_callback(self,msg):
+    #     self.true_heading = self.degrees_to_radians(msg.heading) #* 0.0174533 + (-1 * 3.1415)#AKA Yaw (deg -> radians)
+    #     self.get_logger().info('Got heading (radians):' + str(self.true_heading))
+
+    def pos_heading_callback(self, msg):
+        self.true_heading = -1* self.degrees_to_radians(msg.azimuth) - math.pi/2
+        lat = msg.latitude
+        long = msg.longitude
+        [self.true_easting, self.true_northing] = self.latlon_to_utm(lat, long)
+        self.true_local_x = self.true_easting - 521921.53
+        self.true_local_y = self.true_northing - 5051752.75
+        print()
+
 
     #callback for timer 1
     def publish_vehicle_inputs(self):
         msg = VehicleInputs()
         msg.header = Header()
-        msg.throttle_cmd = self.curr_acc_cmd
+        msg.throttle_cmd = self.curr_acc_cmd # Percent
         # self.throttle_counter = self.throttle_counter + 1
         # msg.throttle_cmd_count = self.throttle_counter
 
-        msg.brake_cmd = self.curr_brake_cmd
+        msg.brake_cmd = self.curr_brake_cmd #kPa
         # self.brake_counter = self.brake_counter + 1
         # msg.brake_cmd_count = self.brake_counter
 
-        msg.steering_cmd = self.curr_steer_cmd
+        msg.steering_cmd = self.curr_steer_cmd #degrees
         # self.steering_counter = self.steering_counter + 1
         # msg.steering_cmd_count = self.steering_counter 
 
         msg.gear_cmd= self.curr_gear_cmd
 
-        self.publisher.publish(msg)
+        self.cmd_input_publisher.publish(msg)
 
-        self.get_logger().info('acc:' + str(self.curr_acc_cmd))
-        self.get_logger().info('Republished vehicle cmds')
+        # self.get_logger().info('throttle %:' + str(self.curr_acc_cmd))
+        # self.get_logger().info('brake kPa:' + str(self.curr_brake_cmd))
+        # self.get_logger().info('steering degrees:' + str(self.curr_steer_cmd))
+        # self.get_logger().info('gear:' + str(self.curr_gear_cmd))
+        # self.get_logger().info('Republished vehicle cmds')
 
     #callback for timer 2
     def publish_tf(self):
+        
         # Replace these with your actual x, y positions, and yaw angle
-        x = self.true_easting
-        y = self.true_northing
-        yaw = math.radians(self.true_heading)  # Yaw angle in radians
+        x = self.true_local_x
+        y = self.true_local_y
+        yaw = self.true_heading  # Yaw angle in radians
+        
+        t = TransformStamped()
+        #assign values to corr. tf variables
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = 'map'
+        t.child_frame_id = 'vehicle'
+        t.transform.translation.x = x
+        t.transform.translation.y = y
+        t.transform.translation.z = 0.0  # Assuming a 2D scenario
+        q = self.quaternion_from_euler(0, 0, yaw)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
 
-        transform = TransformStamped()
-        transform.header.stamp = self.get_clock().now().to_msg()
-        transform.header.frame_id = 'map'
-        transform.child_frame_id = 'vehicle'
-        transform.transform.translation.x = x
-        transform.transform.translation.y = y
-        transform.transform.translation.z = 0.0  # Assuming a 2D scenario
-        q = tf2_ros.transformations.quaternion_from_euler(0, 0, yaw)
-        transform.transform.rotation.x = q[0]
-        transform.transform.rotation.y = q[1]
-        transform.transform.rotation.z = q[2]
-        transform.transform.rotation.w = q[3]
+        #self.get_logger().info('Rotation +Z:' + str(q[2]))
 
-        self.tf_broadcaster.sendTransform(transform)
+        self.tf_broadcaster.sendTransform(t)
+        #self.get_logger().info('Published tf')
+
+    #callback for timer 3
+    def publish_vel(self):
+        vel_msg = Float32()
+        vel_msg.data = self.true_vel
+        self.vel_publisher.publish(vel_msg)
+
+        #self.get_logger().info('Republished velocity: ' + str(self.true_vel))
+    
 
 # ============== Helper Functions ================
 
@@ -201,10 +251,37 @@ class Simulink_to_SIM_Race(Node):
 
         return utm_easting, utm_northing
 
+    def quaternion_from_euler(self, ai, aj, ak):
+        ai /= 2.0
+        aj /= 2.0
+        ak /= 2.0
+        ci = math.cos(ai)
+        si = math.sin(ai)
+        cj = math.cos(aj)
+        sj = math.sin(aj)
+        ck = math.cos(ak)
+        sk = math.sin(ak)
+        cc = ci*ck
+        cs = ci*sk
+        sc = si*ck
+        ss = si*sk
+
+        q = np.empty((4, ))
+        q[0] = cj*sc - sj*cs
+        q[1] = cj*ss + sj*cc
+        q[2] = cj*cs - sj*sc
+        q[3] = cj*cc + sj*ss
+
+        return q
+
+    def degrees_to_radians(self, degrees): #[0,359] to [-pi,pi]
+        radians = (degrees - 180) / 180 * math.pi
+        return radians
+
 def main(args=None):
     rclpy.init(args=args)
     node = Simulink_to_SIM_Race()
-    print("doo")
+    #print("test")
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
