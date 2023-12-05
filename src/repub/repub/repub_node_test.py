@@ -27,10 +27,11 @@ class Simulink_to_SIM_Race(Node):
     gear_counter = 0
 
     STEER_CONSTANT = 13.3333 #200/15
+    UTM_ORIGIN_NORTHING = 5051752.75
+    UTM_ORIGIN_EASTING = 521921.53
 
-
-    true_easting = 521921.53 #Float32 UTM 32N, origin of Monza 
-    true_northing = 5051752.75 #UTM 32N
+    true_easting = UTM_ORIGIN_EASTING  #Float32 UTM 32N, origin of Monza 
+    true_northing = UTM_ORIGIN_NORTHING#UTM 32N
     true_heading = 0.0 #Float32 degrees
     true_local_x = 0.0
     true_local_y = 0.0
@@ -164,12 +165,12 @@ class Simulink_to_SIM_Race(Node):
     #     self.get_logger().info('Got heading (radians):' + str(self.true_heading))
 
     def pos_heading_callback(self, msg):
-        self.true_heading = -1* self.degrees_to_radians(msg.azimuth) - math.pi/2
+        self.true_heading = -1* self.degrees_to_radians(msg.azimuth) - math.pi/2 
         lat = msg.latitude
         long = msg.longitude
         [self.true_easting, self.true_northing] = self.latlon_to_utm(lat, long)
-        self.true_local_x = self.true_easting - 521921.53
-        self.true_local_y = self.true_northing - 5051752.75
+        self.true_local_x = self.true_easting - self.UTM_ORIGIN_EASTING 
+        self.true_local_y = self.true_northing - self.UTM_ORIGIN_NORTHING
         
 
 
@@ -288,3 +289,5 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+

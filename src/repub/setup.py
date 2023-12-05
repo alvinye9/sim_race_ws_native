@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'repub_node = repub.repub_node:main',
+            'repub_odometry_node = repub.repub_odometry_node:main',
             'joystick_publisher_node = repub.joystick_publisher_node:main'
         ],
     },
